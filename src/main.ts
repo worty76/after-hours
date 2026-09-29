@@ -35,7 +35,7 @@ async function boot(): Promise<void> {
   }
   ui.setLoading(1, 'ringing the morning bell…');
   await wait(110);
-  const { rig, people } = postBuild();
+  const { rig, people, titan, wall } = postBuild();
   ui.finishLoading();
 
   // debug/screenshot query params
@@ -46,6 +46,7 @@ async function boot(): Promise<void> {
     const name = params.get('v');
     if (name && rig.followByName(name)) ui.setFollow(name);
   }
+  if (params.has('titan')) titan.summon();
 
   // ---- UI wiring ----
   ui.setSpeedLabel(world.clock.speed);
@@ -80,13 +81,17 @@ async function boot(): Promise<void> {
       case 'H':
         ui.toggleShortcuts();
         break;
+      case 't':
+      case 'T':
+        titan.summon();
+        break;
       default:
         break;
     }
   });
 
   // debug handle for browser-console diagnosis
-  Object.assign(window, { __village: { world, rig, people } });
+  Object.assign(window, { __village: { world, rig, people, titan, wall } });
 
   // ---- frame loop ----
   let last = performance.now();

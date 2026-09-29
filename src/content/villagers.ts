@@ -19,6 +19,8 @@ export interface VillagerSeed {
   stallIndex?: number;
   fieldIndex?: number;
   workSpot?: string | { x: number; z: number } | null;
+  /** builders: which rim gate's wall section they supply */
+  gate?: string;
 }
 
 export const VILLAGER_SEEDS: VillagerSeed[] = [
@@ -34,4 +36,12 @@ export const VILLAGER_SEEDS: VillagerSeed[] = [
   { name: 'Yusuf', role: 'shepherd', houseIndex: 6, workNode: 'fn1', workSpot: { x: 18.4, z: 1.2 } },
   { name: 'Ada', role: 'elder', houseIndex: 4, workNode: 'bn', workSpot: 'bench' },
   { name: 'Ayla', role: 'child', houseIndex: 1, workNode: null },
+  { name: 'Emre', role: 'miller', houseIndex: 4, workNode: 'wm' },
+  { name: 'Kaan', role: 'builder', houseIndex: 4, workNode: 'quarry', gate: 'rimW' },
+  { name: 'Nadia', role: 'builder', houseIndex: 5, workNode: 'quarry', gate: 'rimE' },
+  // the skyland watch: one guard per rim lookout, day and night shifts
+  { name: 'Rustem', role: 'guard', houseIndex: 2, workNode: 'rimW' },
+  { name: 'Deniz', role: 'guard', houseIndex: 3, workNode: 'rimE' },
+  { name: 'Ida', role: 'guard', houseIndex: 2, workNode: 'rimN' },
+  { name: 'Baran', role: 'guard', houseIndex: 3, workNode: 'rimS' },
 ];

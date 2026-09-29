@@ -33,8 +33,10 @@ export function buildFlora(): THREE.Group {
   let blobCount = 0;
   let pineIdx = 0;
   let coneIdx = 0;
+  // pines cluster in the northern forest; deciduous trees dominate elsewhere
+  const inForest = (spot: ScatterSpot) => Math.hypot(spot.x + 2, spot.z - 25) < 15;
   TREE_SPOTS.forEach((spot: ScatterSpot, i: number) => {
-    const isPine = pineIdx < pineCount && spot.s < 0.3;
+    const isPine = pineIdx < pineCount && spot.s < (inForest(spot) ? 0.85 : 0.2);
     if (isPine) {
       const s = rng.range(0.85, 1.25);
       dummy.position.set(spot.x, spot.y, spot.z);

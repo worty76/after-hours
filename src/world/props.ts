@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { makeRng, Rng } from '../core/rng';
-import { ANVIL, BENCH, COOP, DOCK, FIELDS, FLOWER_BEDS, HouseDef, HOUSES, LAMP_LIGHT_INDICES, LAMPS, POND, STALLS, TOWER } from './layout';
+import { ANVIL, BARN, BENCH, BOAT, BRIDGE, COOP, DOCK, FIELDS, FLOWER_BEDS, HAY, HouseDef, HOUSES, LAMP_LIGHT_INDICES, LAMPS, NODES, POND, SCARECROW, STALLS, TOWER, WINDMILL, groundY } from './layout';
 import { GlowSprite, makeGlow, PAL, toon } from './materials';
 
 export interface NightGlass {
@@ -18,8 +18,10 @@ export interface VillageParts {
   chimneys: THREE.Vector3[];
   /** clock hands update, called with the game hour */
   updateHands: (hours: number) => void;
-  /** bell swing, called every frame with game hours + elapsed seconds */
-  updateBell: (hours: number, elapsed: number) => void;
+  /** bell swing, called every frame; alarm rings it continuously */
+  updateBell: (hours: number, elapsed: number, alarm: boolean) => void;
+  /** windmill blades, boat bob — called every frame */
+  updateExtras: (elapsed: number) => void;
   /** lanterns that get a real point light */
   lampLights: THREE.PointLight[];
 }
@@ -332,7 +334,7 @@ function buildWell(): THREE.Group {
 function buildTower(nightGlass: NightGlass[], glows: GlowSprite[], rng: Rng): {
   group: THREE.Group;
   updateHands: (h: number) => void;
-  updateBell: (hours: number, elapsed: number) => void;
+  updateBell: (hours: number, elapsed: number, alarm: boolean) => void;
 } {
   const g = new THREE.Group();
   g.position.set(TOWER.x, 0, TOWER.z);
@@ -450,11 +452,12 @@ function buildTower(nightGlass: NightGlass[], glows: GlowSprite[], rng: Rng): {
     minHand.rotation.z = -(hours % 1) * Math.PI * 2;
   };
 
-  // ring at 7:00, 12:00 and 18:00 — decaying swing for about 12 game-seconds
+  // ring at 7:00, 12:00 and 18:00 — decaying swing for about 12 game-seconds;
+  // a titan alarm keeps it ringing continuously
   const RING_HOURS = [7, 12, 18];
   const RING_SPAN = 0.2 / 60;
-  const updateBell = (hours: number, elapsed: number) => {
-    let amp = 0;
+  const updateBell = (hours: number, elapsed: number, alarm: boolean) => {
+    let amp = alarm ? 0.34 : 0;
     for (const rh of RING_HOURS) {
       let d = hours - rh;
       if (d < -12) d += 24;
@@ -764,6 +767,268 @@ function buildFlowerBed(def: { pos: { x: number; z: number }; rotY: number }, rn
   return g;
 }
 
+/** Arched wooden footbridge over the river. */
+function buildBridge(): THREE.Group {
+  const g = new THREE.Group();
+  g.position.set(BRIDGE.center.x, 0, BRIDGE.center.z);
+  g.rotation.y = BRIDGE.angle;
+
+  const plankMat = toon(PAL.woodLight);
+  const railMat = toon(PAL.woodDark);
+  const n = 9;
+  const arch = (t: number) => 0.16 + Math.sin(t * Math.PI) * 0.34; // deck height
+  for (let i = 0; i < n; i++) {
+    const t = (i + 0.5) / n;
+    const z = (t - 0.5) * BRIDGE.length;
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(BRIDGE.width, 0.07, BRIDGE.length / n - 0.06), plankMat);
+    plank.position.set(0, arch(t), z);
+    plank.rotation.x = -(t - 0.5) * 0.35;
+    plank.castShadow = true;
+    plank.receiveShadow = true;
+    g.add(plank);
+  }
+  // rails with posts
+  for (const side of [-1, 1]) {
+    for (let i = 0; i <= 4; i++) {
+      const t = i / 4;
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.7, 0.09), railMat);
+      post.position.set(side * (BRIDGE.width / 2 - 0.06), arch(t) + 0.3, (t - 0.5) * BRIDGE.length);
+      post.castShadow = true;
+      g.add(post);
+    }
+    for (let i = 0; i < 3; i++) {
+      const t0 = i / 3;
+      const t1 = (i + 1) / 3;
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, BRIDGE.length / 3), railMat);
+      rail.position.set(
+        side * (BRIDGE.width / 2 - 0.06),
+        arch((t0 + t1) / 2) + 0.58,
+        ((t0 + t1) / 2 - 0.5) * BRIDGE.length,
+      );
+      rail.rotation.x = -(t1 - t0) * 0.35;
+      g.add(rail);
+    }
+  }
+  // support posts standing in the water
+  for (const side of [-1, 1]) {
+    for (const z of [-1.6, 1.6]) {
+      const pile = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.1, 0.9, 7), railMat);
+      pile.position.set(side * (BRIDGE.width / 2 - 0.15), -0.1, z);
+      g.add(pile);
+    }
+  }
+  return g;
+}
+
+/** The old mill on its hill — sails turning in the wind. */
+function buildWindmill(): { group: THREE.Group; hub: THREE.Group } {
+  const g = new THREE.Group();
+  g.position.set(WINDMILL.x, groundY(WINDMILL.x, WINDMILL.z), WINDMILL.z);
+  g.rotation.y = 0.7; // face the village
+
+  const bodyH = 5.2;
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.9, bodyH, 10), toon(0xe8dcc2));
+  body.position.y = bodyH / 2;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  g.add(body);
+
+  // stone base ring
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.15, 0.55, 10), toon(0x9a9186));
+  base.position.y = 0.27;
+  base.castShadow = true;
+  g.add(base);
+
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(1.55, 1.2, 10), toon(0x8d6b52));
+  cap.position.y = bodyH + 0.55;
+  cap.castShadow = true;
+  g.add(cap);
+
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.3, 0.08), toon(PAL.woodDark));
+  door.position.set(0, 0.95, 1.78);
+  g.add(door);
+  const glass = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.5, 0.08),
+    new THREE.MeshToonMaterial({ color: 0x9fc6d8, emissive: 0xffca7a, emissiveIntensity: 0.6 }),
+  );
+  glass.position.set(0, 3.4, 1.72);
+  g.add(glass);
+
+  // the sails: hub + four lattice blades
+  const hub = new THREE.Group();
+  hub.position.set(0, bodyH + 0.15, 1.5);
+  const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.5, 8), toon(PAL.woodDark));
+  axle.rotation.x = Math.PI / 2;
+  hub.add(axle);
+  for (let i = 0; i < 4; i++) {
+    const blade = new THREE.Group();
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.14, 2.5, 0.09), toon(PAL.woodDark));
+    arm.position.y = 1.25;
+    blade.add(arm);
+    for (let s = 0; s < 4; s++) {
+      const slat = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.42, 0.045), toon(0xf3ead8));
+      slat.position.set(0.28, 0.45 + s * 0.55, 0.03);
+      blade.add(slat);
+    }
+    blade.rotation.z = (i / 4) * Math.PI * 2;
+    hub.add(blade);
+  }
+  hub.position.z = 1.62;
+  g.add(hub);
+
+  return { group: g, hub };
+}
+
+/** Red barn with big X doors, out with the fields. */
+function buildBarn(rng: Rng): THREE.Group {
+  const g = new THREE.Group();
+  g.position.set(BARN.pos.x, 0, BARN.pos.z);
+  g.rotation.y = BARN.rotY;
+
+  const wallH = 2.6;
+  const w = 4.5;
+  const d = 3.4;
+  const walls = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), toon(0xa8423a));
+  walls.position.y = wallH / 2;
+  walls.castShadow = true;
+  walls.receiveShadow = true;
+  g.add(walls);
+
+  // stone strip + gable roof
+  const foundation = new THREE.Mesh(new THREE.BoxGeometry(w + 0.12, 0.28, d + 0.12), toon(0x9a9186));
+  foundation.position.y = 0.14;
+  g.add(foundation);
+  const roof = gableRoof(w, d, 1.9, 0x7a4f38);
+  roof.position.y = wallH;
+  g.add(roof);
+
+  // big doors with an X brace, on the field side
+  const doorW = 1.9;
+  for (const s of [-1, 1]) {
+    const leaf = new THREE.Mesh(new THREE.BoxGeometry(doorW / 2 - 0.03, 2.1, 0.08), toon(0x8a352e));
+    leaf.position.set(s * (doorW / 4), 1.15, d / 2 + 0.05);
+    g.add(leaf);
+    const brace = new THREE.Mesh(new THREE.BoxGeometry(0.09, 2.6, 0.04), toon(0xf0e6d0));
+    brace.position.set(s * (doorW / 4), 1.15, d / 2 + 0.1);
+    brace.rotation.z = s * 0.72;
+    g.add(brace);
+  }
+  // hay loft door up top
+  const loft = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.08), toon(0x5d3a2c));
+  loft.position.set(0, wallH + 0.7, d / 2 - 0.3);
+  loft.rotation.x = -0.35;
+  g.add(loft);
+
+  // crates by the wall
+  const crate = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.4, 0.45), toon(PAL.woodLight));
+  crate.position.set(-w / 2 - 0.4, 0.2, d / 4);
+  crate.rotation.y = rng.range(0, 1);
+  crate.castShadow = true;
+  g.add(crate);
+  return g;
+}
+
+/** A scarecrow standing guard in the crops. */
+function buildScarecrow(): THREE.Group {
+  const g = new THREE.Group();
+  g.position.set(SCARECROW.x, 0, SCARECROW.z);
+
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 1.5, 6), toon(PAL.woodMid));
+  post.position.y = 0.75;
+  post.castShadow = true;
+  g.add(post);
+  const cross = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.0, 6), toon(PAL.woodMid));
+  cross.rotation.z = Math.PI / 2;
+  cross.position.y = 1.12;
+  g.add(cross);
+
+  const shirt = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), toon(0xc98a3a));
+  shirt.scale.set(1, 1.15, 0.7);
+  shirt.position.y = 1.0;
+  g.add(shirt);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 7), toon(0xd9b45c));
+  head.position.y = 1.36;
+  g.add(head);
+  const hat = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.18, 8), toon(PAL.woodMid));
+  hat.position.y = 1.52;
+  g.add(hat);
+  return g;
+}
+
+function buildHay(pos: { x: number; z: number }, rng: Rng): THREE.Group {
+  const g = new THREE.Group();
+  const bale = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.72, 12), toon(0xd9b45c));
+  bale.rotation.z = Math.PI / 2;
+  bale.position.y = 0.42;
+  bale.castShadow = true;
+  bale.receiveShadow = true;
+  g.add(bale);
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.43, 0.08, 12), toon(0xb98c3a));
+  band.rotation.z = Math.PI / 2;
+  band.position.y = 0.42;
+  g.add(band);
+  g.position.set(pos.x, 0, pos.z);
+  g.rotation.y = rng.range(0, Math.PI);
+  return g;
+}
+
+/** Little rowboat tied at the dock. */
+function buildBoat(): { group: THREE.Group } {
+  const g = new THREE.Group();
+  g.position.set(BOAT.pos.x, 0.05, BOAT.pos.z);
+  g.rotation.y = BOAT.rotY;
+
+  const hull = new THREE.Mesh(new THREE.SphereGeometry(0.55, 12, 8), toon(0xb55d3a));
+  hull.scale.set(1.9, 0.42, 0.75);
+  hull.position.y = 0.12;
+  hull.castShadow = true;
+  g.add(hull);
+  const interior = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 8), toon(0x7a4028));
+  interior.scale.set(1.75, 0.4, 0.62);
+  interior.position.y = 0.16;
+  g.add(interior);
+  const bench = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.5), toon(PAL.woodLight));
+  bench.position.y = 0.28;
+  g.add(bench);
+  for (const s of [-1, 1]) {
+    const oar = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 1.1, 5), toon(PAL.woodMid));
+    oar.position.set(s * 0.18, 0.3, 0.3);
+    oar.rotation.set(0.5, 0, s * 0.12);
+    g.add(oar);
+  }
+  // mooring rope to the dock
+  const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, 0.8, 4), toon(0xd9cba8));
+  rope.position.set(0.55, 0.12, -0.35);
+  rope.rotation.z = 1.2;
+  g.add(rope);
+  return { group: g };
+}
+
+/** Ancient watcher stones at the rim lookouts — they mark where titans climb. */
+function buildWatcherStone(pos: { x: number; z: number }, rng: Rng): THREE.Group {
+  const g = new THREE.Group();
+  g.position.set(pos.x + rng.range(-1, 1), 0, pos.z + rng.range(-1, 1));
+  g.rotation.y = rng.range(0, Math.PI * 2);
+  g.rotation.z = rng.range(-0.06, 0.06);
+
+  const stone = new THREE.Mesh(new THREE.BoxGeometry(0.85, 2.3, 0.6), toon(0x8f8a80));
+  stone.position.y = 1.1;
+  stone.castShadow = true;
+  g.add(stone);
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.22, 0.72), toon(0x7a756c));
+  cap.position.y = 2.32;
+  cap.castShadow = true;
+  g.add(cap);
+  // a cool rune strip — the watchstone's signal
+  const rune = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 1.3, 0.06),
+    new THREE.MeshToonMaterial({ color: 0x4a5a66, emissive: 0x9adfff, emissiveIntensity: 0.9 }),
+  );
+  rune.position.set(0, 1.25, 0.31);
+  g.add(rune);
+  return g;
+}
+
 export function buildVillage(): VillageParts {
   const group = new THREE.Group();
   const nightGlass: NightGlass[] = [];
@@ -820,6 +1085,23 @@ export function buildVillage(): VillageParts {
 
   group.add(buildDock());
 
+  // the river crossing and its landmarks
+  group.add(buildBridge());
+  const windmill = buildWindmill();
+  group.add(windmill.group);
+  group.add(buildBarn(rng));
+  group.add(buildScarecrow());
+  for (const pos of HAY) {
+    group.add(buildHay(pos, rng));
+  }
+  const boat = buildBoat();
+  group.add(boat.group);
+
+  // watcher stones at the rim lookouts
+  for (const id of ['rimW', 'rimE', 'rimN', 'rimS']) {
+    group.add(buildWatcherStone(NODES[id], rng));
+  }
+
   for (const bed of FLOWER_BEDS) {
     group.add(buildFlowerBed(bed, rng));
   }
@@ -838,6 +1120,11 @@ export function buildVillage(): VillageParts {
     chimneys,
     updateHands: tower.updateHands,
     updateBell: tower.updateBell,
+    updateExtras(elapsed: number) {
+      windmill.hub.rotation.z = -elapsed * 0.55; // lazy, steady wind
+      boat.group.position.y = 0.05 + Math.sin(elapsed * 1.1) * 0.03;
+      boat.group.rotation.z = Math.sin(elapsed * 0.9) * 0.03;
+    },
     lampLights,
   };
 }

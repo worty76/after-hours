@@ -78,7 +78,7 @@ export class SkySystem {
   constructor(scene: THREE.Scene, lampLights: THREE.PointLight[]) {
     this.lampLights = lampLights;
 
-    this.fog = new THREE.Fog(0xd8edf6, 60, 190);
+    this.fog = new THREE.Fog(0xd8edf6, 110, 340);
     scene.fog = this.fog;
 
     const domeMats = {
@@ -87,7 +87,7 @@ export class SkySystem {
     };
     this.domeMats = domeMats;
     const dome = new THREE.Mesh(
-      new THREE.SphereGeometry(180, 24, 14),
+      new THREE.SphereGeometry(340, 28, 16),
       new THREE.ShaderMaterial({
         uniforms: domeMats,
         vertexShader: DOME_VERT,
@@ -104,12 +104,12 @@ export class SkySystem {
     this.sun = new THREE.DirectionalLight(0xfff8e6, 1.3);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
-    this.sun.shadow.camera.left = -38;
-    this.sun.shadow.camera.right = 38;
-    this.sun.shadow.camera.top = 38;
-    this.sun.shadow.camera.bottom = -38;
+    this.sun.shadow.camera.left = -72;
+    this.sun.shadow.camera.right = 72;
+    this.sun.shadow.camera.top = 72;
+    this.sun.shadow.camera.bottom = -72;
     this.sun.shadow.camera.near = 20;
-    this.sun.shadow.camera.far = 220;
+    this.sun.shadow.camera.far = 300;
     this.sun.shadow.bias = -0.0002;
     this.sun.shadow.normalBias = 0.04;
     // VSM blur: the soft, diffused shadow of a tabletop model
@@ -126,7 +126,7 @@ export class SkySystem {
     for (let i = 0; i < starCount; i++) {
       const a = Math.random() * Math.PI * 2;
       const e = Math.random() * 0.5 + 0.08; // elevation fraction, keep above horizon
-      const r = 165;
+      const r = 310;
       starPos[i * 3] = Math.cos(a) * Math.cos(e * Math.PI * 0.5) * r;
       starPos[i * 3 + 1] = Math.sin(e * Math.PI * 0.5) * r;
       starPos[i * 3 + 2] = Math.sin(a) * Math.cos(e * Math.PI * 0.5) * r;
@@ -148,11 +148,11 @@ export class SkySystem {
     scene.add(this.stars);
 
     this.sunDisc = new THREE.Mesh(
-      new THREE.CircleGeometry(8, 24),
+      new THREE.CircleGeometry(13, 24),
       new THREE.MeshBasicMaterial({ color: 0xffe9b0, fog: false }),
     );
     this.moonDisc = new THREE.Mesh(
-      new THREE.CircleGeometry(5.4, 24),
+      new THREE.CircleGeometry(9, 24),
       new THREE.MeshBasicMaterial({ color: 0xdfe6f5, fog: false }),
     );
     scene.add(this.sunDisc, this.moonDisc);
@@ -200,11 +200,11 @@ export class SkySystem {
     (this.stars.material as THREE.PointsMaterial).opacity = this.starA;
     this.stars.rotation.y += dt * 0.004; // very slow wheeling of the sky
 
-    this.sunDisc.position.copy(sunDir).multiplyScalar(150);
+    this.sunDisc.position.copy(sunDir).multiplyScalar(290);
     this.sunDisc.lookAt(0, 0, 0);
     this.sunDisc.visible = sunDir.y > -0.02;
     (this.sunDisc.material as THREE.MeshBasicMaterial).color.copy(this.sunColor).lerp(WHITE, 0.5);
-    this.moonDisc.position.copy(moonDir).multiplyScalar(150);
+    this.moonDisc.position.copy(moonDir).multiplyScalar(290);
     this.moonDisc.lookAt(0, 0, 0);
     this.moonDisc.visible = moonDir.y > -0.02;
 
@@ -266,8 +266,11 @@ function buildClouds(): THREE.Group {
       }),
     );
     const a = rng() * Math.PI * 2;
-    const r = rng.range(18, 68);
-    sprite.position.set(Math.cos(a) * r, rng.range(18, 28), Math.sin(a) * r);
+    // keep sky clouds off the rim: high over the village or far out at sea —
+    // never hovering the wall at the edge
+    const inland = rng.chance(0.55);
+    const r = inland ? rng.range(6, 36) : rng.range(80, 130);
+    sprite.position.set(Math.cos(a) * r, inland ? rng.range(31, 40) : rng.range(21, 30), Math.sin(a) * r);
     const w = rng.range(13, 24);
     sprite.scale.set(w, w * 0.44, 1);
     sprite.userData.speed = rng.range(0.25, 0.6);

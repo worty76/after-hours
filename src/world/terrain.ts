@@ -6,14 +6,27 @@ import { HILLS, TERRAIN_RADIUS } from './layout';
 const GRASS_BASE = new THREE.Color(PAL.grassBase);
 const GRASS_LIGHT = new THREE.Color(PAL.grassLight);
 const GRASS_DARK = new THREE.Color(PAL.grassDark);
+const FOREST_TINT = new THREE.Color(0x527c48);
+const MEADOW_TINT = new THREE.Color(0x93c56f);
 const ROCK_BANDS = PAL.cliff.map((c) => new THREE.Color(c));
 const DIRT_EDGE = new THREE.Color(PAL.cliffLip);
 
 /** Irregular coastline radius so the island is not a perfect disc. */
 export function coastRadius(angle: number): number {
-  const n1 = (noise2(Math.cos(angle) * 1.35 + 7.3, Math.sin(angle) * 1.35 + 2.9) - 0.5) * 2.6;
-  const n2 = (noise2(Math.cos(angle) * 3.4 + 1.7, Math.sin(angle) * 3.4 + 8.1) - 0.5) * 1.1;
+  const n1 = (noise2(Math.cos(angle) * 1.35 + 7.3, Math.sin(angle) * 1.35 + 2.9) - 0.5) * 3.2;
+  const n2 = (noise2(Math.cos(angle) * 3.4 + 1.7, Math.sin(angle) * 3.4 + 8.1) - 0.5) * 1.4;
   return TERRAIN_RADIUS + n1 + n2;
+}
+
+/** large-scale colour zones: a darker pine forest north, a warm meadow east. */
+function biomeTint(x: number, z: number, out: THREE.Color): void {
+  const wobble = (noise2(x * 0.13, z * 0.13) - 0.5) * 0.7;
+  const forestD = Math.hypot(x + 2, z - 25) / 15;
+  const forest = THREE.MathUtils.clamp(1 - forestD + wobble, 0, 1);
+  out.lerp(FOREST_TINT, forest * 0.45);
+  const meadowD = Math.hypot(x - 18, z - 4) / 14;
+  const meadow = THREE.MathUtils.clamp(1 - meadowD + wobble, 0, 1);
+  out.lerp(MEADOW_TINT, meadow * 0.35);
 }
 
 function grassColor(x: number, z: number, out: THREE.Color): void {
@@ -23,6 +36,7 @@ function grassColor(x: number, z: number, out: THREE.Color): void {
   out.copy(GRASS_BASE).lerp(n > 0.5 ? GRASS_LIGHT : GRASS_DARK, Math.abs(n - 0.5) * 1.5);
   out.lerp(GRASS_LIGHT, n2 * 0.16);
   out.offsetHSL(0, 0, (n3 - 0.5) * 0.05);
+  biomeTint(x, z, out);
 }
 
 function rockColor(localY: number, height: number, jitter: number, out: THREE.Color): void {
@@ -62,7 +76,7 @@ function makeGrainTexture(): THREE.CanvasTexture {
 export function buildTerrain(): THREE.Group {
   const group = new THREE.Group();
   const height = 6;
-  const geo = new THREE.CylinderGeometry(TERRAIN_RADIUS, TERRAIN_RADIUS - 2.5, height, 96, 4);
+  const geo = new THREE.CylinderGeometry(TERRAIN_RADIUS, TERRAIN_RADIUS - 2.5, height, 120, 5);
   geo.translate(0, -height / 2, 0); // top surface at y = 0
 
   const pos = geo.attributes.position as THREE.BufferAttribute;
@@ -109,7 +123,7 @@ export function buildTerrain(): THREE.Group {
   group.add(terrain);
 
   // grass lip overhanging the wavy coast — the "cut turf" diorama edge
-  const steps = 110;
+  const steps = 140;
   const lipVerts: number[] = [];
   const lipIdx: number[] = [];
   for (let i = 0; i <= steps; i++) {
@@ -157,10 +171,10 @@ export function buildTerrain(): THREE.Group {
   const cliffRocks = new THREE.InstancedMesh(
     cliffRockGeo,
     new THREE.MeshToonMaterial({ color: 0x93846f }),
-    22,
+    30,
   );
   const dummy = new THREE.Object3D();
-  for (let i = 0; i < 22; i++) {
+  for (let i = 0; i < 30; i++) {
     const a = rng.range(0, Math.PI * 2);
     const y = rng.range(-4.8, -0.7);
     const embed = rng.range(0.1, 0.55);

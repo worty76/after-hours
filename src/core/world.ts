@@ -13,6 +13,20 @@ export interface FrameContext {
   env: WorldEnv;
 }
 
+/** Live info about a titan attack, written by the titan system each frame. */
+export interface Threat {
+  /** true while a titan is on the rim */
+  active: boolean;
+  /** titan head position (stones aim here) */
+  x: number;
+  y: number;
+  z: number;
+  /** villagers' landed stone counter — the titan drains it as damage */
+  hits: number;
+  /** 0..1 camera shake intensity */
+  shake: number;
+}
+
 export interface WorldEnv {
   /** 0 = full day, 1 = deep night */
   night: number;
@@ -20,6 +34,10 @@ export interface WorldEnv {
   daylight: number;
   /** renderer tone-mapping exposure for the current time */
   exposure: number;
+  /** titan attack state (idle values when no attack) */
+  threat: Threat;
+  /** landed wall-stone counter per gate, drained by the wall system */
+  build: Record<string, number>;
 }
 
 /**
@@ -40,7 +58,13 @@ export interface WorldSystem {
 export class World {
   readonly scene = new THREE.Scene();
   readonly clock = new GameClock();
-  readonly env: WorldEnv = { night: 0, daylight: 1, exposure: 1.1 };
+  readonly env: WorldEnv = {
+    night: 0,
+    daylight: 1,
+    exposure: 1.1,
+    threat: { active: false, x: 0, y: 0, z: 0, hits: 0, shake: 0 },
+    build: { rimW: 0, rimE: 0, rimN: 0, rimS: 0 },
+  };
 
   private readonly systems: WorldSystem[] = [];
   private elapsed = 0;

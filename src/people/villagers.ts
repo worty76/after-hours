@@ -1,9 +1,27 @@
 import * as THREE from 'three';
 import { makeRng, Rng } from '../core/rng';
-import { BENCH, DOCK, FIELDS, HOUSES, POND, STALLS } from '../world/layout';
+import { Threat } from '../core/world';
+import { BENCH, DOCK, FIELDS, HOUSES, NODES, POND, STALLS } from '../world/layout';
 import { findPath, nearestNode, nodePos } from '../world/nav';
 import { makeBlobShadow, makeSpeechBubble, PAL, toon } from '../world/materials';
 import { VILLAGER_SEEDS, VillagerSeed } from '../content/villagers';
+
+const RIM_NODES = ['rimW', 'rimE', 'rimN', 'rimS'];
+
+/** the rim lookout nearest to a world position */
+function nearestRimNode(x: number, z: number): string {
+  let best = RIM_NODES[0];
+  let bestD = Infinity;
+  for (const id of RIM_NODES) {
+    const n = NODES[id];
+    const d = (n.x - x) ** 2 + (n.z - z) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = id;
+    }
+  }
+  return best;
+}
 
 type Activity = 'sleep' | 'home' | 'work' | 'market' | 'roam' | 'fetch';
 
@@ -15,11 +33,15 @@ interface ScheduleEntry {
 
 export interface VillagerDef {
   name: string;
-  role: 'farmer' | 'baker' | 'merchant' | 'smith' | 'fisher' | 'priest' | 'shepherd' | 'elder' | 'child';
+  role: 'farmer' | 'baker' | 'merchant' | 'smith' | 'fisher' | 'priest' | 'shepherd' | 'elder' | 'child' | 'miller' | 'builder' | 'guard';
   houseIndex: number;
   /** sleep/wake anchor node (e.g. the priest lives in the bell tower) */
   homeNode?: string;
   workNode: string | null;
+  /** builders: which rim gate's wall section they supply */
+  gate?: string;
+  /** guards: day or night shift at their rim post */
+  shift?: 'day' | 'night';
   /** exact standing spot for work (behind a stall, among the crops), if any */
   workSpot: { x: number; z: number } | null;
   roamNodes: string[];
@@ -30,7 +52,7 @@ export interface VillagerDef {
   pants: number;
   hair: number;
   hat: 'straw' | 'none';
-  prop: 'can' | 'rod' | 'stick' | 'cane' | 'none';
+  prop: 'can' | 'rod' | 'stick' | 'cane' | 'spear' | 'none';
   fetchesWater: boolean;
   schedule: ScheduleEntry[];
 }
@@ -91,6 +113,11 @@ function elderSchedule(): ScheduleEntry[] {
   ];
 }
 
+/** the watch never ends: guards stand at their rim post around the clock */
+function guardSchedule(): ScheduleEntry[] {
+  return [{ start: 0, end: 24, act: 'work' }];
+}
+
 function childSchedule(rng: Rng): ScheduleEntry[] {
   const wake = 7.4 + rng() * 0.8;
   return [
@@ -135,7 +162,9 @@ export function makeDef(seed: VillagerSeed): VillagerDef {
         ? elderSchedule()
         : role === 'child'
           ? childSchedule(rng)
-          : workerSchedule(rng, role !== 'fisher' && role !== 'shepherd');
+          : role === 'guard'
+            ? guardSchedule()
+            : workerSchedule(rng, role !== 'fisher' && role !== 'shepherd');
   return {
     ...seed,
     workSpot:
@@ -152,8 +181,8 @@ export function makeDef(seed: VillagerSeed): VillagerDef {
     scale: role === 'child' ? 0.74 : role === 'elder' ? 0.92 : 1,
     speed: role === 'child' ? 2.3 : role === 'elder' ? 1.1 : rng.range(1.5, 1.9),
     skin: rng.pick(SKINS),
-    shirt: rng.pick(SHIRTS),
-    pants: rng.pick(PANTS),
+    shirt: role === 'guard' ? 0x5e7fa3 : rng.pick(SHIRTS),
+    pants: role === 'guard' ? 0x3e4a5a : rng.pick(PANTS),
     hair: rng.pick(HAIRS),
     hat: role === 'farmer' || role === 'shepherd' ? ('straw' as const) : ('none' as const),
     prop:
@@ -165,7 +194,9 @@ export function makeDef(seed: VillagerSeed): VillagerDef {
             ? ('stick' as const)
             : role === 'elder'
               ? ('cane' as const)
-              : ('none' as const),
+              : role === 'guard'
+                ? ('spear' as const)
+                : ('none' as const),
     fetchesWater: role === 'farmer' || role === 'merchant' || role === 'baker' || role === 'smith',
     schedule,
   } satisfies VillagerDef;
@@ -193,10 +224,12 @@ function buildMesh(def: VillagerDef): {
   prop: THREE.Object3D | null;
   yoke: THREE.Group;
   bubble: THREE.Sprite;
+  carriedStone: THREE.Mesh | null;
 } {
   const group = new THREE.Group();
   const body = new THREE.Group();
   group.add(body);
+  const rng = makeRng(hashStr(def.name + ':mesh')); // per-character look details
 
   const skinMat = toon(def.skin);
   const shirtMat = toon(def.shirt);
@@ -204,50 +237,155 @@ function buildMesh(def: VillagerDef): {
   const hairMat = toon(def.hair);
   const woodMat = toon(PAL.woodMid);
 
-  // short chibi legs, pivot at the hip
+  // short chibi legs with little shoes, pivot at the hip
   const legGeo = new THREE.CapsuleGeometry(0.09, 0.16, 3, 8);
   legGeo.translate(0, -0.14, 0);
-  const legL = new THREE.Group();
-  legL.position.set(-0.11, 0.34, 0);
-  legL.add(new THREE.Mesh(legGeo, pantsMat));
-  const legR = new THREE.Group();
-  legR.position.set(0.11, 0.34, 0);
-  legR.add(new THREE.Mesh(legGeo, pantsMat));
+  const shoeGeo = new THREE.SphereGeometry(0.078, 8, 6);
+  const shoeMat = toon(0x4a3a2e);
+  const makeLeg = (side: -1 | 1) => {
+    const leg = new THREE.Group();
+    leg.position.set(side * 0.11, 0.34, 0);
+    leg.add(new THREE.Mesh(legGeo, pantsMat));
+    const shoe = new THREE.Mesh(shoeGeo, shoeMat);
+    shoe.position.set(0, -0.37, 0.045);
+    shoe.scale.set(1, 0.55, 1.45);
+    shoe.castShadow = true;
+    leg.add(shoe);
+    return leg;
+  };
+  const legL = makeLeg(-1);
+  const legR = makeLeg(1);
   body.add(legL, legR);
 
-  // egg-shaped body
+  // egg-shaped body with a leather belt
   const torso = new THREE.Mesh(new THREE.SphereGeometry(0.27, 14, 12), shirtMat);
   torso.position.y = 0.6;
   torso.scale.set(1, 1.12, 0.88);
   body.add(torso);
+  const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.252, 0.268, 0.075, 12), toon(0x5a4632));
+  belt.position.y = 0.47;
+  body.add(belt);
+  // some villagers wear a skirt
+  if (def.role !== 'guard' && rng.chance(0.45)) {
+    const skirt = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.245, 0.37, 0.36, 12),
+      toon(new THREE.Color(def.shirt).multiplyScalar(0.85).getHex()),
+    );
+    skirt.position.y = 0.4;
+    skirt.castShadow = true;
+    body.add(skirt);
+  }
 
-  // arms pivot at the shoulders
+  // arms pivot at the shoulders, with little hands at the ends
   const armGeo = new THREE.CapsuleGeometry(0.06, 0.14, 3, 6);
   armGeo.translate(0, -0.12, 0);
-  const armL = new THREE.Group();
-  armL.position.set(-0.27, 0.84, 0);
-  armL.add(new THREE.Mesh(armGeo, shirtMat));
-  const armR = new THREE.Group();
-  armR.position.set(0.27, 0.84, 0);
-  armR.add(new THREE.Mesh(armGeo, shirtMat));
+  const handGeo = new THREE.SphereGeometry(0.062, 8, 6);
+  const makeArm = (side: -1 | 1) => {
+    const arm = new THREE.Group();
+    arm.position.set(side * 0.27, 0.84, 0);
+    arm.add(new THREE.Mesh(armGeo, shirtMat));
+    const hand = new THREE.Mesh(handGeo, skinMat);
+    hand.position.set(0, -0.3, 0.01);
+    arm.add(hand);
+    return arm;
+  };
+  const armL = makeArm(-1);
+  const armR = makeArm(1);
   body.add(armL, armR);
 
-  // big head with tiny eyes
+  // big head with a proper little face
   const headGrp = new THREE.Group();
   headGrp.position.y = 1.1;
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 14), skinMat);
   headGrp.add(head);
+  const eyeMat = toon(0x2b2320);
+  const glintMat = toon(0xffffff);
+  for (const s of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.033, 8, 6), eyeMat);
+    eye.position.set(s * 0.1, 0.02, 0.252);
+    headGrp.add(eye);
+    const glint = new THREE.Mesh(new THREE.SphereGeometry(0.011, 6, 5), glintMat);
+    glint.position.set(s * 0.1 + 0.014, 0.036, 0.272);
+    headGrp.add(glint);
+  }
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.032, 8, 6), toon(new THREE.Color(def.skin).offsetHSL(0, 0, -0.07).getHex()));
+  nose.position.set(0, -0.03, 0.268);
+  headGrp.add(nose);
+  const mouth = new THREE.Mesh(new THREE.SphereGeometry(0.026, 6, 5), toon(0x6b4238));
+  mouth.position.set(0, -0.115, 0.245);
+  mouth.scale.set(1.15, 0.5, 0.5);
+  headGrp.add(mouth);
+  const blushMat = toon(0xe89a84);
+  for (const s of [-1, 1]) {
+    const cheek = new THREE.Mesh(new THREE.SphereGeometry(0.042, 6, 5), blushMat);
+    cheek.position.set(s * 0.145, -0.07, 0.205);
+    cheek.scale.set(1, 0.55, 0.35);
+    headGrp.add(cheek);
+  }
+  // hair: a base cap plus one of a few styles per villager
   const hair = new THREE.Mesh(new THREE.SphereGeometry(0.295, 16, 14), hairMat);
   hair.position.set(0, 0.06, -0.02);
   hair.scale.set(1, 0.85, 1);
   headGrp.add(hair);
-  const eyeMat = toon(0x2b2320);
-  for (const s of [-1, 1]) {
-    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 6, 6), eyeMat);
-    eye.position.set(s * 0.1, 0.02, 0.255);
-    headGrp.add(eye);
+  const fringe = new THREE.Mesh(new THREE.SphereGeometry(0.29, 12, 8), hairMat);
+  fringe.position.set(0, 0.17, 0.1);
+  fringe.scale.set(1.02, 0.52, 0.58);
+  headGrp.add(fringe);
+  const hairStyle = rng.int(0, 3);
+  if (hairStyle === 1) {
+    // long back hair
+    const back = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 10), hairMat);
+    back.position.set(0, -0.08, -0.12);
+    back.scale.set(1.05, 1.25, 1.0);
+    headGrp.add(back);
+  } else if (hairStyle === 2) {
+    // ponytail
+    const tail = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), hairMat);
+    tail.position.set(0, 0.0, -0.3);
+    tail.scale.set(0.8, 1.5, 0.8);
+    headGrp.add(tail);
+  } else if (hairStyle === 3) {
+    // two buns
+    for (const s of [-1, 1]) {
+      const bun = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), hairMat);
+      bun.position.set(s * 0.22, 0.16, -0.16);
+      headGrp.add(bun);
+    }
   }
   body.add(headGrp);
+
+  // the skyland watch: helmet, spear and round shield
+  if (def.role === 'guard') {
+    const steel = toon(0x9aa4ad);
+    const steelDark = toon(0x6e767e);
+    const helmet = new THREE.Group();
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(0.245, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), steel);
+    helmet.add(dome);
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.27, 0.035, 12), steelDark);
+    brim.position.y = 0.005;
+    helmet.add(brim);
+    helmet.position.y = 0.2;
+    helmet.rotation.z = 0.05;
+    headGrp.add(helmet);
+
+    const spear = new THREE.Group();
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.028, 1.7, 5), woodMat);
+    shaft.geometry.translate(0, 0.6, 0);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.2, 5), steel);
+    tip.position.y = 1.48;
+    spear.add(shaft, tip);
+    spear.rotation.x = 0.06;
+    spear.position.set(0.02, -0.28, 0.04);
+    armR.add(spear);
+
+    const shield = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.05, 12), steel);
+    shield.rotation.z = Math.PI / 2;
+    shield.position.set(-0.06, -0.22, 0);
+    const boss = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), steelDark);
+    boss.position.x = -0.05;
+    shield.add(boss);
+    armL.add(shield);
+  }
 
   if (def.hat === 'straw') {
     const hat = new THREE.Group();
@@ -302,6 +440,15 @@ function buildMesh(def: VillagerDef): {
   bubble.position.set(0, 1.95, 0);
   group.add(bubble);
 
+  // builders carry a stone between the quarry and the wall
+  let carriedStone: THREE.Mesh | null = null;
+  if (def.role === 'builder') {
+    carriedStone = new THREE.Mesh(new THREE.DodecahedronGeometry(0.17, 0), toon(0x8a8175));
+    carriedStone.position.set(0, 0.95, 0.3);
+    carriedStone.visible = false;
+    body.add(carriedStone);
+  }
+
   // soft contact shadow grounds the figure
   const blob = makeBlobShadow(0.42);
   blob.position.y = 0.03;
@@ -311,7 +458,7 @@ function buildMesh(def: VillagerDef): {
     if (o instanceof THREE.Mesh) o.castShadow = true;
   });
   group.scale.setScalar(def.scale);
-  return { group, legL, legR, armL, armR, body, headGrp, prop, yoke, bubble };
+  return { group, legL, legR, armL, armR, body, headGrp, prop, yoke, bubble, carriedStone };
 }
 
 export class Villager {
@@ -327,6 +474,7 @@ export class Villager {
   private readonly prop: THREE.Object3D | null;
   private readonly yoke: THREE.Group;
   private readonly bubble: THREE.Sprite;
+  private readonly carriedStone: THREE.Mesh | null;
 
   private path: string[] = [];
   private pathIndex = 0;
@@ -342,10 +490,20 @@ export class Villager {
   private carrying = false;
   private readonly pose: Pose = { ...REST_POSE };
 
+  // titan defence
+  private defendTarget: string | null = null;
+  private wasDefending = false;
+  private throwTimer = 0;
+  private patrolCooldown = 0;
+  private patrolAlt = false;
+  private readonly stones: THREE.InstancedMesh;
+  private readonly stoneState: { active: boolean; t: number; dur: number; power: number; from: THREE.Vector3; to: THREE.Vector3 }[] = [];
+  private readonly stoneDummy = new THREE.Object3D();
+
   /** current position, updated every frame; used by the follow camera */
   readonly position = new THREE.Vector3();
 
-  constructor(def: VillagerDef) {
+  constructor(def: VillagerDef, worldGroup: THREE.Group) {
     this.def = def;
     const mesh = buildMesh(def);
     this.group = mesh.group;
@@ -357,12 +515,33 @@ export class Villager {
     this.prop = mesh.prop;
     this.yoke = mesh.yoke;
     this.bubble = mesh.bubble;
+    this.carriedStone = mesh.carriedStone;
     this.doorNode = def.homeNode ?? HOUSES[def.houseIndex].doorNode;
     const door = nodePos(this.doorNode);
     this.group.position.set(door.x, 0, door.z);
     this.position.copy(this.group.position);
     this.position.y = 1.1 * def.scale;
     this.group.visible = false; // asleep at boot (the day starts at 6.75)
+
+    // personal stone pool for titan defence (world-space: parented above)
+    const stoneGeo = new THREE.SphereGeometry(0.1, 6, 5);
+    this.stones = new THREE.InstancedMesh(stoneGeo, toon(0x8a8175), 30);
+    this.stones.frustumCulled = false;
+    this.stones.castShadow = false;
+    worldGroup.add(this.stones);
+    for (let i = 0; i < 30; i++) {
+      this.stoneState.push({
+        active: false,
+        t: 0,
+        dur: 0.9,
+        power: 1,
+        from: new THREE.Vector3(),
+        to: new THREE.Vector3(),
+      });
+      this.stoneDummy.position.set(0, -50, 0);
+      this.stoneDummy.updateMatrix();
+      this.stones.setMatrixAt(i, this.stoneDummy.matrix);
+    }
   }
 
   get isIdle(): boolean {
@@ -413,7 +592,7 @@ export class Villager {
     if (this.chatTimer <= 0) this.chatTimer = duration;
   }
 
-  update(dt: number, hours: number, elapsed: number): void {
+  update(dt: number, hours: number, elapsed: number, threat: Threat | null, build: Record<string, number> | null): void {
     const entryIdx = this.entryAt(hours);
     const act = this.def.schedule[entryIdx].act;
 
@@ -426,12 +605,68 @@ export class Villager {
         this.path = [];
         this.pathIndex = 0;
         this.atSpot = false;
-        if (target !== this.doorNode) this.walkTo(target);
+        if (target !== this.doorNode && !this.wasDefending) this.walkTo(target);
       } else if (act === 'fetch' && this.carrying) {
         this.walkTo(this.def.workNode ?? this.doorNode); // finish the delivery
-      } else {
+      } else if (!this.wasDefending) {
+        this.walkTo(target); // the titan alarm keeps its override otherwise
+      }
+    }
+
+    // ---- titan alarm overrides the day's plan ----
+    // builders keep hauling unless the attack is at their own gate
+    let alarmed = threat !== null && threat.active && act !== 'sleep' && this.group.visible;
+    if (alarmed && this.def.role === 'builder' && threat) {
+      const gate = nodePos(this.def.gate ?? 'rimW');
+      if (Math.hypot(threat.x - gate.x, threat.z - gate.z) > 30) alarmed = false;
+    }
+    // guards hold their own post and loose heavy stones at anything close to it
+    if (alarmed && threat && this.def.role === 'guard') {
+      const post = nodePos(this.def.workNode ?? 'rimW');
+      this.wasDefending = true;
+      this.defendTarget = this.def.workNode ?? 'rimW';
+      this.chatHeading = Math.atan2(threat.x - this.group.position.x, threat.z - this.group.position.z);
+      if (this.path.length === 0 && Math.hypot(this.group.position.x - post.x, this.group.position.z - post.z) > 1.7) {
+        this.walkTo(this.defendTarget);
+      }
+      const onWatch = Math.hypot(threat.x - post.x, threat.z - post.z) < 38;
+      if (onWatch && this.path.length === 0) {
+        this.throwTimer -= dt;
+        if (this.throwTimer <= 0) {
+          this.throwTimer = 0.8 + Math.random() * 0.6; // trained: quicker than villagers
+          this.throwStone(threat, 2);
+        }
+      }
+    } else if (alarmed && threat) {
+      const isChild = this.def.role === 'child';
+      const target = isChild
+        ? this.doorNode // children run home
+        : this.def.role === 'priest'
+          ? 't' // the priest stays at his tower, ringing
+          : nearestRimNode(threat.x, threat.z);
+      if (this.defendTarget !== target) {
+        this.defendTarget = target;
         this.walkTo(target);
       }
+      this.wasDefending = true;
+      this.chatHeading = Math.atan2(threat.x - this.group.position.x, threat.z - this.group.position.z);
+
+      // at the rim: hurl stones at the titan's head
+      const rim = nodePos(this.defendTarget);
+      const atRim = this.path.length === 0 && Math.hypot(this.group.position.x - rim.x, this.group.position.z - rim.z) < 1.4;
+      if (atRim && !isChild) {
+        this.throwTimer -= dt;
+        if (this.throwTimer <= 0) {
+          this.throwTimer = 1.2 + Math.random() * 1.0;
+          this.throwStone(threat);
+        }
+      }
+    } else if (this.wasDefending && (!threat || !threat.active)) {
+      // all clear — back to ordinary life
+      this.wasDefending = false;
+      this.defendTarget = null;
+      this.throwTimer = 0;
+      this.currentEntry = -1; // force a schedule re-evaluation
     }
 
     let moving = false;
@@ -492,7 +727,7 @@ export class Villager {
     } else {
       this.idleTime += dt;
       // step from the node onto the exact work spot (behind a stall, in the crops, on the bench)
-      if (!this.atSpot && this.def.workSpot && (act === 'work' || (this.carrying && act === 'fetch'))) {
+      if (!this.wasDefending && !this.atSpot && this.def.workSpot && (act === 'work' || (this.carrying && act === 'fetch'))) {
         moving = true;
         const spot = this.def.workSpot;
         const dx = spot.x - this.group.position.x;
@@ -513,8 +748,45 @@ export class Villager {
       if (this.atSpot && (act === 'work' || (act === 'fetch' && this.def.fetchesWater && !this.carrying))) {
         this.chorePhase += dt * (this.def.role === 'smith' ? 6 : 2.2);
       }
+      // guards patrol their stretch of the rim when nothing threatens it
+      if (this.def.role === 'guard' && act === 'work' && !this.wasDefending && this.idleTime > 10 + this.patrolCooldown) {
+        this.patrolCooldown = Math.random() * 12;
+        this.idleTime = 0;
+        this.patrolAlt = !this.patrolAlt;
+        const post = this.def.workNode ?? 'rimW';
+        const PATROL: Record<string, string> = { rimW: 'wm', rimE: 'fn1', rimN: 'r1', rimS: 'r6' };
+        this.walkTo(this.patrolAlt ? (PATROL[post] ?? post) : post);
+      }
+
+      // builders shuttle stones from the quarry to their wall gate
+      if (this.def.role === 'builder' && act === 'work' && !this.wasDefending && build) {
+        const gateNode = this.def.gate ?? 'rimW';
+        if (!this.carrying) {
+          const q = nodePos('quarry');
+          const atQuarry = this.path.length === 0 && Math.hypot(this.group.position.x - q.x, this.group.position.z - q.z) < 1.5;
+          if (atQuarry) {
+            this.carrying = true;
+            if (this.carriedStone) this.carriedStone.visible = true;
+            this.walkTo(gateNode);
+          } else if (this.path.length === 0) {
+            this.walkTo('quarry');
+          }
+        } else {
+          const g = nodePos(gateNode);
+          const atGate = this.path.length === 0 && Math.hypot(this.group.position.x - g.x, this.group.position.z - g.z) < 1.7;
+          if (atGate) {
+            this.carrying = false;
+            if (this.carriedStone) this.carriedStone.visible = false;
+            build[gateNode] = (build[gateNode] ?? 0) + 1;
+            this.walkTo('quarry');
+          } else if (this.path.length === 0) {
+            this.walkTo(gateNode);
+          }
+        }
+      }
+
       // children wander between their hangouts
-      if (act === 'roam' && this.idleTime > 9 + this.roamCooldown) {
+      if (act === 'roam' && !this.wasDefending && this.idleTime > 9 + this.roamCooldown) {
         this.roamCooldown = Math.random() * 14;
         this.idleTime = 0;
         this.walkTo(this.targetFor('roam', hours + Math.random()));
@@ -603,7 +875,7 @@ export class Villager {
     }
 
     // chatting: wave and show the speech bubble
-    if (this.chatTimer > 0) {
+    if (this.chatTimer > 0 && !this.wasDefending) {
       this.chatTimer -= dt;
       const fade = Math.min(1, this.chatTimer / 0.4);
       this.bubble.visible = true;
@@ -615,8 +887,16 @@ export class Villager {
       this.bubble.visible = false;
     }
 
+    // defending: wind up and hurl (the arm follows the throw timer)
+    if (this.wasDefending && alarmed) {
+      const wind = this.throwTimer < 0.5 ? 1 - this.throwTimer * 2 : 0; // just after a throw
+      target.armR = -2.4 + wind * 1.6;
+      if (moving) target.armR = -0.5;
+    }
+
     if (this.prop) {
-      this.prop.visible = this.def.prop === 'cane' || act === 'work';
+      this.prop.visible =
+        this.def.prop === 'cane' || this.def.role === 'guard' || act === 'work';
     }
 
     // ---------- blend and apply the pose ----------
@@ -645,10 +925,53 @@ export class Villager {
     this.group.position.y += (dockY - this.group.position.y) * Math.min(1, dt * 10);
     this.position.copy(this.group.position);
     this.position.y = this.group.position.y + 1.1 * this.def.scale;
+
+    // stones in flight
+    for (let i = 0; i < this.stoneState.length; i++) {
+      const s = this.stoneState[i];
+      if (s.active) {
+        s.t += dt / s.dur;
+        if (s.t >= 1) {
+          s.active = false;
+          if (threat && threat.active) threat.hits += s.power;
+        }
+      }
+      if (s.active) {
+        this.stoneDummy.position.lerpVectors(s.from, s.to, s.t);
+        this.stoneDummy.position.y += Math.sin(s.t * Math.PI) * 2.6;
+      } else {
+        this.stoneDummy.position.set(0, -50, 0);
+      }
+      this.stoneDummy.updateMatrix();
+      this.stones.setMatrixAt(i, this.stoneDummy.matrix);
+    }
+    this.stones.instanceMatrix.needsUpdate = true;
+  }
+
+  /** hurl a stone in a high arc at the titan's head */
+  private throwStone(threat: Threat, power = 1): void {
+    const slot = this.stoneState.find((s) => !s.active);
+    if (!slot) return;
+    slot.active = true;
+    slot.t = 0;
+    slot.dur = 0.9;
+    slot.power = power;
+    slot.from.set(this.group.position.x, 1.5, this.group.position.z);
+    slot.to.set(
+      threat.x + (Math.random() - 0.5) * 1.6,
+      Math.max(1.5, threat.y + (Math.random() - 0.5) * 1.2),
+      threat.z + (Math.random() - 0.5) * 1.6,
+    );
   }
 }
 
 const RING_HOURS = [7, 12, 18];
+
+function hashStr(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h >>> 0;
+}
 
 function shortAngle(a: number): number {
   let d = a;
@@ -662,16 +985,16 @@ export class VillagerSystem {
   readonly villagers: Villager[] = [];
 
   constructor() {
-    for (const def of makeDefs()) this.spawn(def);
+    for (const def of makeDefs()) this.spawn(def, this.group);
   }
 
   /** Bring a new character to life from a data seed (see src/content/villagers.ts). */
   addSeed(seed: VillagerSeed): Villager {
-    return this.spawn(makeDef(seed));
+    return this.spawn(makeDef(seed), this.group);
   }
 
-  private spawn(def: VillagerDef): Villager {
-    const v = new Villager(def);
+  private spawn(def: VillagerDef, worldGroup: THREE.Group): Villager {
+    const v = new Villager(def, worldGroup);
     this.villagers.push(v);
     this.group.add(v.group);
     return v;
@@ -686,8 +1009,8 @@ export class VillagerSystem {
     return true;
   }
 
-  update(dt: number, hours: number, elapsed: number): void {
-    for (const v of this.villagers) v.update(dt, hours, elapsed);
+  update(dt: number, hours: number, elapsed: number, threat: Threat | null, build: Record<string, number> | null): void {
+    for (const v of this.villagers) v.update(dt, hours, elapsed, threat, build);
 
     // little chat clusters: idle villagers near each other turn, wave and chat
     for (let i = 0; i < this.villagers.length; i++) {

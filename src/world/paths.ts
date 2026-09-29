@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { EDGES, NODES, PLAZA_RADIUS } from './layout';
+import { EDGES, NODES, PLAZA_RADIUS, groundY } from './layout';
 
 const DIRT = new THREE.Color('#cfa878');
 const DIRT_ALT = new THREE.Color('#c39c6c');
@@ -32,10 +32,11 @@ function straight(a: THREE.Vector2, b: THREE.Vector2, samples: number): THREE.Ve
   return pts;
 }
 
-function ribbon(points: THREE.Vector2[], width: number, y: number, color: THREE.Color): THREE.Mesh {
+function ribbon(points: THREE.Vector2[], width: number, y: number | ((x: number, z: number) => number), color: THREE.Color): THREE.Mesh {
   const verts: number[] = [];
   const indexes: number[] = [];
   const count = points.length;
+  const yAt = typeof y === 'function' ? y : () => y;
   for (let i = 0; i < count; i++) {
     const p = points[i];
     const prev = points[Math.max(0, i - 1)];
@@ -46,8 +47,9 @@ function ribbon(points: THREE.Vector2[], width: number, y: number, color: THREE.
     const nx = -dz / len;
     const nz = dx / len;
     const hw = width / 2;
-    verts.push(p.x + nx * hw, y, p.y + nz * hw);
-    verts.push(p.x - nx * hw, y, p.y - nz * hw);
+    const py = yAt(p.x, p.y);
+    verts.push(p.x + nx * hw, py, p.y + nz * hw);
+    verts.push(p.x - nx * hw, py, p.y - nz * hw);
     if (i < count - 1) {
       const o = i * 2;
       // wound counter-clockwise when viewed from above so the top face is visible
@@ -74,11 +76,15 @@ export function buildPaths(): THREE.Group {
     const a = v(NODES[aId]);
     const b = v(NODES[bId]);
     const onRing = a.length() > 10.4 && b.length() > 10.4;
+    // sample density follows segment length; the path hugs the terrain so it
+    // can climb the windmill hill and roll over the outer mounds
+    const dist = a.distanceTo(b);
+    const samples = Math.max(2, Math.ceil(dist / 1.4));
     const pts = onRing
-      ? ringArc(a, b, Math.max(6, Math.ceil(a.distanceTo(b) / 1.2)))
-      : straight(a, b, 2);
+      ? ringArc(a, b, Math.max(6, Math.ceil(dist / 1.2)))
+      : straight(a, b, samples);
     const width = onRing ? 1.6 : 1.25;
-    const y = 0.03 + (edgeIndex % 5) * 0.004; // tiny offsets avoid z-fighting at crossings
+    const y = (x: number, z: number) => groundY(x, z) + 0.03 + (edgeIndex % 5) * 0.004;
     group.add(ribbon(pts, width, y, edgeIndex % 2 === 0 ? DIRT : DIRT_ALT));
     edgeIndex++;
   }

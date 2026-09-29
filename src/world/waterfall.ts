@@ -1,30 +1,18 @@
 import * as THREE from 'three';
 import { PAL } from './materials';
-import { STREAM } from './layout';
+import { RIVER } from './layout';
 
 /**
- * The pond overflows into a little stream that runs to the cliff edge and
- * pours off as a waterfall — the classic floating-diorama silhouette, with
- * falling streaks for motion and a puff of mist where the water vanishes.
+ * The pond overflows into a river that meanders across the island and pours
+ * off the far rim as a waterfall — with falling streaks for motion and a puff
+ * of mist where the water vanishes into the sky.
  */
 
-const FALL_BOTTOM = -6.8;
+const FALL_BOTTOM = -7.5;
 
-interface SheetSample {
-  r: number;
-  y: number;
-  w: number;
-}
-
-/** Profile of the falling sheet: arc over the grass lip, then accelerate down. */
-function sheetAt(t: number): SheetSample {
-  if (t < 0.25) {
-    const u = t / 0.25;
-    return { r: 28.7 + u * 1.5, y: 0.13 - u * 0.05, w: 1.1 };
-  }
-  const u = (t - 0.25) / 0.75;
-  const ease = Math.pow(u, 1.35);
-  return { r: 30.2 + u * 1.6, y: 0.08 - ease * (0.08 - FALL_BOTTOM), w: 1.1 + u * 0.8 };
+interface WaterfallSystemOptions {
+  /** profile height of the falling sheet */
+  fallDepth?: number;
 }
 
 export class WaterfallSystem {
@@ -36,55 +24,74 @@ export class WaterfallSystem {
   private readonly mistState: { p: number; drift: number; off: number; seed: number }[] = [];
   private readonly dummy = new THREE.Object3D();
 
-  private readonly angle: number;
-  private readonly ux: number;
-  private readonly uz: number;
+  // waterfall crest frame: position + outward direction
+  private readonly crest = new THREE.Vector2();
+  private readonly dir = new THREE.Vector2();
+  private readonly perp = new THREE.Vector2();
+  private readonly fallDepth: number;
 
-  constructor() {
-    const ax = STREAM.a.x;
-    const az = STREAM.a.z;
-    const bx = STREAM.b.x;
-    const bz = STREAM.b.z;
-    const len = Math.hypot(bx - ax, bz - az) || 1;
-    const dx = (bx - ax) / len;
-    const dz = (bz - az) / len;
-    this.angle = Math.atan2(bz, bx);
-    this.ux = Math.cos(this.angle);
-    this.uz = Math.sin(this.angle);
-    // perpendicular to the flow, used to width the ribbons and the sheet
-    const px = -dz;
-    const pz = dx;
+  constructor(opts: WaterfallSystemOptions = {}) {
+    this.fallDepth = opts.fallDepth ?? FALL_BOTTOM;
 
     const waterMat = new THREE.MeshToonMaterial({
       color: PAL.water,
       transparent: true,
       opacity: 0.85,
     });
+    const bedMat = new THREE.MeshToonMaterial({ color: 0xb3946a });
 
-    // --- stream: wet bed + water surface, climbing gently onto the grass lip ---
-    const samples = 14;
+    // bowed centreline: each river point gets a gentle sideways wobble so the
+    // flow doesn't read as a polyline of straight runs
+    const pts: THREE.Vector2[] = [];
+    for (let i = 0; i < RIVER.length; i++) {
+      const p = new THREE.Vector2(RIVER[i].x, RIVER[i].z);
+      const prev = new THREE.Vector2(RIVER[Math.max(0, i - 1)].x, RIVER[Math.max(0, i - 1)].z);
+      const next = new THREE.Vector2(RIVER[Math.min(RIVER.length - 1, i + 1)].x, RIVER[Math.min(RIVER.length - 1, i + 1)].z);
+      const d = next.clone().sub(prev);
+      const len = d.length() || 1;
+      const bow = Math.sin(i * 2.3) * 0.4;
+      p.x += (-d.y / len) * bow;
+      p.y += (d.x / len) * bow;
+      pts.push(p);
+    }
+
+    // --- river bed + water ribbons along the centreline, widening downstream ---
     for (const layer of [
-      { mat: new THREE.MeshToonMaterial({ color: 0xb3946a }), width: 0.85, y: 0.028 },
-      { mat: waterMat, width: 0.55, y: 0.06 },
+      { mat: bedMat, width0: 1.5, width1: 2.4, y: 0.028 },
+      { mat: waterMat, width0: 1.0, width1: 1.8, y: 0.06 },
     ]) {
       const verts: number[] = [];
       const idx: number[] = [];
-      for (let i = 0; i <= samples; i++) {
-        const t = i / samples;
-        // slight bow outward so the stream doesn't look ruler-straight
-        const bow = Math.sin(t * Math.PI) * 0.35;
-        const cx = ax + (bx - ax) * t + this.ux * bow;
-        const cz = az + (bz - az) * t + this.uz * bow;
-        // climb onto the grass lip near the edge (lip top rises to ~0.12 at r 29)
-        const r = Math.hypot(cx, cz);
-        const climb = r > 28.4 ? Math.min(1, (r - 28.4) / 0.9) * 0.05 : 0;
-        const y = layer.y + climb;
-        const w = layer.width * (1 - t * 0.25);
-        verts.push(cx + px * w, y, cz + pz * w);
-        verts.push(cx - px * w, y, cz - pz * w);
-        if (i < samples) {
-          const o = i * 2;
-          idx.push(o, o + 2, o + 1, o + 1, o + 2, o + 3);
+      let cursor = 0;
+      const last = pts.length - 1;
+      for (let i = 0; i < last; i++) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        const d = b.clone().sub(a);
+        const segLen = d.length() || 1;
+        const nx = -d.y / segLen;
+        const nz = d.x / segLen;
+        const samples = Math.max(4, Math.ceil(segLen / 1.2));
+        let prevPair = -1;
+        for (let s = 0; s <= samples; s++) {
+          const t = (i + s / samples) / last;
+          const isSeam = s === 0 && i > 0; // reuse the previous segment's last pair
+          let pairIdx: number;
+          if (isSeam) {
+            pairIdx = cursor - 2;
+          } else {
+            pairIdx = cursor;
+            const p = a.clone().lerp(b, s / samples);
+            const w = (layer.width0 + (layer.width1 - layer.width0) * t) / 2;
+            // order matters: (+n, -n) keeps the top face wound counter-clockwise
+            verts.push(p.x + nx * w, layer.y, p.y + nz * w);
+            verts.push(p.x - nx * w, layer.y, p.y - nz * w);
+            cursor += 2;
+          }
+          if (prevPair >= 0) {
+            idx.push(prevPair, pairIdx, prevPair + 1, prevPair + 1, pairIdx, pairIdx + 1);
+          }
+          prevPair = pairIdx;
         }
       }
       const geo = new THREE.BufferGeometry();
@@ -96,18 +103,25 @@ export class WaterfallSystem {
       this.group.add(mesh);
     }
 
-    // --- the falling sheet ---
+    // --- waterfall crest frame at the river's end ---
+    const end = new THREE.Vector2(RIVER[RIVER.length - 1].x, RIVER[RIVER.length - 1].z);
+    const prev = new THREE.Vector2(RIVER[RIVER.length - 2].x, RIVER[RIVER.length - 2].z);
+    this.dir.copy(end).sub(prev).normalize();
+    this.perp.set(-this.dir.y, this.dir.x);
+    this.crest.copy(end);
+
+    // --- the falling sheet: arc over the lip, then accelerate down ---
     const sheetVerts: number[] = [];
     const sheetIdx: number[] = [];
     const sheetSamples = 18;
     for (let i = 0; i <= sheetSamples; i++) {
       const t = i / sheetSamples;
-      const s = sheetAt(t);
-      const cx = this.ux * s.r;
-      const cz = this.uz * s.r;
+      const s = this.sheetAt(t);
+      const cx = this.crest.x + this.dir.x * s.f;
+      const cz = this.crest.y + this.dir.y * s.f;
       const w = s.w;
-      sheetVerts.push(cx + px * w, s.y, cz + pz * w);
-      sheetVerts.push(cx - px * w, s.y, cz - pz * w);
+      sheetVerts.push(cx + this.perp.x * w, s.y, cz + this.perp.y * w);
+      sheetVerts.push(cx - this.perp.x * w, s.y, cz - this.perp.y * w);
       if (i < sheetSamples) {
         const o = i * 2;
         sheetIdx.push(o, o + 2, o + 1, o + 1, o + 2, o + 3);
@@ -132,13 +146,13 @@ export class WaterfallSystem {
     // --- crest foam blobs ---
     const foamMat = new THREE.MeshToonMaterial({ color: 0xf4fbfd });
     for (let i = 0; i < 5; i++) {
-      const off = (i / 4 - 0.5) * 1.7;
-      const foam = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), foamMat);
+      const off = (i / 4 - 0.5) * 2.6;
+      const foam = new THREE.Mesh(new THREE.SphereGeometry(0.24, 8, 6), foamMat);
       foam.scale.set(1, 0.45, 0.8);
       foam.position.set(
-        this.ux * 29.5 + px * off,
+        this.crest.x + this.perp.x * off + this.dir.x * 0.4,
         0.15,
-        this.uz * 29.5 + pz * off,
+        this.crest.y + this.perp.y * off + this.dir.y * 0.4,
       );
       this.group.add(foam);
     }
@@ -155,7 +169,7 @@ export class WaterfallSystem {
       this.streakState.push({
         p: Math.random(),
         speed: 0.55 + Math.random() * 0.5,
-        off: (Math.random() - 0.5) * 1.5,
+        off: (Math.random() - 0.5) * 2.2,
       });
     }
     this.group.add(this.streaks);
@@ -172,11 +186,26 @@ export class WaterfallSystem {
       this.mistState.push({
         p: Math.random(),
         drift: 0.18 + Math.random() * 0.25,
-        off: (Math.random() - 0.5) * 2.4,
+        off: (Math.random() - 0.5) * 3.2,
         seed: Math.random() * 10,
       });
     }
     this.group.add(this.mist);
+  }
+
+  /** distance forward / height / half-width along the falling sheet */
+  private sheetAt(t: number): { f: number; y: number; w: number } {
+    if (t < 0.25) {
+      const u = t / 0.25;
+      return { f: u * 1.5, y: 0.13 - u * 0.05, w: 1.3 };
+    }
+    const u = (t - 0.25) / 0.75;
+    const ease = Math.pow(u, 1.35);
+    return {
+      f: 1.5 + u * 1.6,
+      y: 0.08 - ease * (0.08 - this.fallDepth),
+      w: 1.3 + u * 0.9,
+    };
   }
 
   update(dt: number, elapsed: number): void {
@@ -186,16 +215,17 @@ export class WaterfallSystem {
       s.p += dt * s.speed;
       if (s.p > 1) {
         s.p = 0;
-        s.off = (Math.random() - 0.5) * 1.5;
+        s.off = (Math.random() - 0.5) * 2.2;
         s.speed = 0.55 + Math.random() * 0.5;
       }
-      const prof = sheetAt(0.28 + s.p * 0.7);
+      const prof = this.sheetAt(0.28 + s.p * 0.7);
       this.dummy.position.set(
-        this.ux * prof.r + -this.uz * s.off,
+        this.crest.x + this.dir.x * prof.f + this.perp.x * s.off,
         prof.y,
-        this.uz * prof.r + this.ux * s.off,
+        this.crest.y + this.dir.y * prof.f + this.perp.y * s.off,
       );
-      this.dummy.rotation.set(0, -this.angle, 0.12);
+      const angle = Math.atan2(this.dir.x, this.dir.y);
+      this.dummy.rotation.set(0, angle, 0.12);
       this.dummy.scale.set(1, 1 + Math.sin(s.p * 9) * 0.15, 1);
       this.dummy.updateMatrix();
       this.streaks.setMatrixAt(i, this.dummy.matrix);
@@ -204,23 +234,22 @@ export class WaterfallSystem {
     this.streaks.instanceMatrix.needsUpdate = true;
 
     // mist puffs drift away from the base, pulsing as they go
-    const baseR = 32.2;
     let j = 0;
     for (const m of this.mistState) {
       m.p += dt * m.drift;
       if (m.p > 1) {
         m.p = 0;
-        m.off = (Math.random() - 0.5) * 2.4;
+        m.off = (Math.random() - 0.5) * 3.2;
         m.seed = Math.random() * 10;
       }
-      const r = baseR + m.p * 1.6;
-      const y = FALL_BOTTOM + 0.5 + m.p * 1.2 + Math.sin(elapsed * 1.4 + m.seed) * 0.18;
+      const f = 3.1 + m.p * 1.6;
+      const y = this.fallDepth + 0.5 + m.p * 1.2 + Math.sin(elapsed * 1.4 + m.seed) * 0.18;
       const grow = 0.5 + m.p * 1.3;
       const fade = m.p < 0.15 ? m.p / 0.15 : m.p > 0.7 ? (1 - m.p) / 0.3 : 1;
       this.dummy.position.set(
-        this.ux * r + -this.uz * m.off,
+        this.crest.x + this.dir.x * f + this.perp.x * m.off,
         y,
-        this.uz * r + this.ux * m.off,
+        this.crest.y + this.dir.y * f + this.perp.y * m.off,
       );
       this.dummy.scale.setScalar(grow * fade);
       this.dummy.rotation.set(0, m.seed, 0);

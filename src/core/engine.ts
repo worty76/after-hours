@@ -15,8 +15,8 @@ export function createRenderer(canvas: HTMLCanvasElement): THREE.WebGLRenderer {
 
 export function createCamera(): THREE.PerspectiveCamera {
   // long lens from far away: compressed perspective reads as a real miniature
-  const camera = new THREE.PerspectiveCamera(32, window.innerWidth / window.innerHeight, 0.1, 500);
-  camera.position.set(36, 26, 42);
+  const camera = new THREE.PerspectiveCamera(32, window.innerWidth / window.innerHeight, 0.1, 900);
+  camera.position.set(82, 54, 95);
   return camera;
 }
 

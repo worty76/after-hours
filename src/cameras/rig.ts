@@ -22,7 +22,7 @@ export class CameraRig {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.06;
     this.controls.minDistance = 7;
-    this.controls.maxDistance = 90;
+    this.controls.maxDistance = 200;
     this.controls.maxPolarAngle = 1.45; // never dip below the diorama
     this.controls.update();
   }

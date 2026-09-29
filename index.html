@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Petit Valley · A Living Village Diorama</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+      <div id="vignette"></div>
+
+      <div id="loader">
+        <div class="loader-card">
+          <div class="loader-title">Petit Valley</div>
+          <div class="loader-sub">a living village diorama</div>
+          <div class="loader-bar"><div id="loader-fill"></div></div>
+          <div id="loader-label">waking the valley…</div>
+        </div>
+      </div>
+
+      <header id="hud">
+        <div id="title-card" class="card">
+          <div class="title">Petit Valley</div>
+          <div class="subtitle">a living village diorama</div>
+        </div>
+        <div id="clock-card" class="card">
+          <div id="clock-time">06:45</div>
+          <div id="clock-phase">Dawn</div>
+        </div>
+      </header>
+
+      <div id="controls" class="card">
+        <button id="btn-pause" title="Pause time (Space)">❚❚</button>
+        <input id="speed" type="range" min="0" max="100" value="33" />
+        <div id="speed-label">1.0×</div>
+        <button id="btn-help" title="Shortcuts (H)">?</button>
+      </div>
+
+      <div id="follow-badge" class="card" hidden>
+        following <b id="follow-name"></b>
+      </div>
+
+      <aside id="shortcuts" class="card" hidden>
+        <h3>Shortcuts</h3>
+        <ul>
+          <li><kbd>1</kbd> overview camera</li>
+          <li><kbd>2</kbd> next villager</li>
+          <li><kbd>3</kbd> previous villager</li>
+          <li><kbd>Space</kbd> pause time</li>
+          <li><kbd>H</kbd> toggle this panel</li>
+          <li><kbd>drag</kbd> orbit · <kbd>scroll</kbd> zoom</li>
+        </ul>
+      </aside>
+
+      <div id="hint">drag to orbit the valley</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
